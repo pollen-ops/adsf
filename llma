@@ -1,0 +1,132 @@
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 32
+
+#define OLED_RESET    -1
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// Pin assignments
+#define PHOTO_PIN A3      // Photoresistor input (moved)
+#define POT_PIN   A1      // Potentiometer input (moved)      // Potentiometer input
+#define BUZZER_PIN 6      // Buzzer pin (D6)
+#define BUTTON_PIN 2      // Button pin (D2)
+
+// Threshold variables
+int threshold = 950;        // Default threshold
+bool systemEnabled = false; // System starts OFF
+
+// Animation state
+bool blinkState = false;
+unsigned long lastBlink = 0;
+int blinkType = 0; // 0 = open eyes, 1 = closed eyes
+
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for (;;);
+  }
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  display.setCursor(0, 0);
+  display.println(F("System initializing..."));
+  display.display();
+  delay(1000);
+}
+
+void loop() {
+  int lightValue = analogRead(PHOTO_PIN); // Photoresistor reading
+  int potValue = analogRead(POT_PIN);     // Potentiometer raw reading
+
+  // Remap potentiometer to 900-1000 threshold range
+  threshold = map(potValue, 0, 1023, 900, 1000);
+  threshold = constrain(threshold, 900, 1000);
+
+  // Toggle system enable/disable on button press (D2 with pull-up)
+  if (digitalRead(BUTTON_PIN) == LOW) {
+    systemEnabled = !systemEnabled;
+    delay(300); // debounce
+  }
+
+  // Determine if threshold reached (light below threshold = brighter)
+  bool thresholdReached = systemEnabled && (lightValue < threshold);
+
+  if (thresholdReached) {
+    // Beep once for 0.5s
+    digitalWrite(BUZZER_PIN, HIGH);
+    Serial.println(F("Threshold reached: Beeping..."));
+    display.clearDisplay();
+    display.setCursor(0, 24);
+    display.print("STATE:BEEP P:");
+    display.print(threshold);
+    display.print(" B:");
+    display.print(lightValue);
+    display.display();
+    delay(500);
+
+    // Turn off buzzer & system
+    digitalWrite(BUZZER_PIN, LOW);
+    systemEnabled = false;
+  } else {
+    digitalWrite(BUZZER_PIN, LOW);
+  }
+
+  // Serial debug output
+  Serial.print("Light: ");
+  Serial.print(lightValue);
+  Serial.print(" | PotRaw: ");
+  Serial.print(potValue);
+  Serial.print(" | Threshold: ");
+  Serial.print(threshold);
+  Serial.print(" | SystemEnabled: ");
+  Serial.println(systemEnabled ? "ON" : "OFF");
+
+  // Blink animation logic
+  if (millis() - lastBlink > 500) {
+    blinkState = !blinkState;
+    lastBlink = millis();
+    if (blinkState) {
+      blinkType = random(0, 5) == 0 ? 1 : 0; // 1 in 5 chance to blink
+    }
+  }
+
+  // Update OLED
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.print("L.U.M.A. STATE: ");
+  display.println(systemEnabled ? "ON" : "OFF");
+
+  display.setCursor(0, 10);
+  display.print("T: ");
+  display.println(threshold);
+
+  display.setCursor(0, 20);
+  display.print("B: ");
+  display.println(lightValue);
+
+  // Face animation on right
+  if (blinkState && blinkType == 0) {
+    display.setCursor(90, 8);   // eyes
+    display.print("o   o");
+    display.setCursor(92, 18);  // mouth
+    display.print("^---^  ");
+  } else {
+    display.setCursor(90, 8);
+    display.print("-   -");
+    display.setCursor(92, 18);
+    display.print("^---^  ");
+  }
+  
+
+  display.display();
+  delay(200);
+}
