@@ -1,0 +1,103 @@
+import numpy as np
+import math
+import struct
+import pandas as pd
+
+
+SPHERE_DIAMETER = 0.00001
+CYLINDER_HEIGHT = 0.008255
+CYLINDER_RADIUS = 0.0079375
+STL_FILENAME = "1.stl"
+
+
+BASE_RES = 12
+MIN_RES = 4
+MAX_RES = 24
+REFERENCE_RADIUS = 0.4
+
+def normalize(v):
+    norm = np.linalg.norm(v)
+    return v / norm if norm != 0 else v
+
+def sph_to_cart(theta, phi):
+    x = math.sin(theta) * math.cos(phi)
+    y = math.sin(theta) * math.sin(phi)
+    z = math.cos(theta)
+    return np.array([x, y, z], dtype=np.float32)
+
+def generate_uv_sphere(radius, slices, stacks):
+    vertices = []
+    faces = []
+    for i in range(stacks + 1):
+        theta = math.pi * i / stacks
+        for j in range(slices + 1):
+            phi = 2 * math.pi * j / slices
+            vertex = radius * sph_to_cart(theta, phi)
+            vertices.append(vertex)
+    for i in range(stacks):
+        for j in range(slices):
+            p1 = i * (slices + 1) + j
+            p2 = p1 + (slices + 1)
+            faces.append([vertices[p1], vertices[p2], vertices[p1 + 1]])
+            faces.append([vertices[p2], vertices[p2 + 1], vertices[p1 + 1]])
+    return faces
+
+def get_tri_res(radius):
+    factor = radius / REFERENCE_RADIUS
+    slices = max(MIN_RES, min(int(BASE_RES * factor), MAX_RES))
+    stacks = max(MIN_RES, min(int(BASE_RES * factor * 0.75), MAX_RES))
+    return slices, stacks
+
+def generate_packed_centers(d, cyl_radius, cyl_height):
+    r = d / 2
+    dx, dy, dz = d, d * math.sqrt(3) / 2, d * math.sqrt(6) / 3
+    grid_x = int(2 * cyl_radius / dx) + 2
+    grid_y = int(2 * cyl_radius / dy) + 2
+    grid_z = int(cyl_height / dz) + 2
+    centers = []
+    for z in range(grid_z):
+        for y in range(grid_y):
+            for x in range(grid_x):
+                ox = dx / 2 if (z % 2 == 1 or y % 2 == 1) else 0
+                oy = dy / 3 if z % 2 == 1 else 0
+                px = x * dx + ox - cyl_radius
+                py = y * dy + oy - cyl_radius
+                pz = z * dz - cyl_height / 2
+                if px**2 + py**2 <= (cyl_radius - r)**2 and abs(pz) <= cyl_height / 2 - r:
+                    centers.append((px, py, pz))
+    return centers
+
+def write_binary_stl(triangles, filename):
+    with open(filename, 'wb') as f:
+        f.write(b'Binary STL Writer' + b' ' * (80 - len('Binary STL Writer')))
+        f.write(struct.pack('<I', len(triangles)))
+        for tri in triangles:
+            p1, p2, p3 = tri
+            normal = normalize(np.cross(p2 - p1, p3 - p1)).astype(np.float32)
+            data = struct.pack('<3f', *normal) + struct.pack('<3f', *p1) + struct.pack('<3f', *p2) + struct.pack('<3f', *p3) + struct.pack('<H', 0)
+            f.write(data)
+
+def main():
+    radius = SPHERE_DIAMETER / 2
+    centers = generate_packed_centers(SPHERE_DIAMETER, CYLINDER_RADIUS, CYLINDER_HEIGHT)
+    slices, stacks = get_tri_res(radius)
+    base_sphere = generate_uv_sphere(radius, slices, stacks)
+
+    all_tris = []
+    for cx, cy, cz in centers:
+        for tri in base_sphere:
+            transformed = [v + np.array([cx, cy, cz], dtype=np.float32) for v in tri]
+            all_tris.append(transformed)
+
+    write_binary_stl(all_tris, STL_FILENAME)
+    return STL_FILENAME, len(centers), len(all_tris)
+
+output_path, sphere_count, triangle_count = main()
+
+summary_df = pd.DataFrame({
+    "Output STL File": [output_path],
+    "Sphere Count": [sphere_count],
+    "Triangle Count": [triangle_count]
+})
+
+
