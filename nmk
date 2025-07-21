@@ -1,17 +1,19 @@
 import numpy as np
 import math
 import struct
-import pandas as pd
 
 
-SPHERE_DIAMETER = 0.00001
-CYLINDER_HEIGHT = 0.008255
-CYLINDER_RADIUS = 0.0079375
-STL_FILENAME = "1.stl"
-
+SPHERE_DIAMETER = 0.001
+MATRIX_DIAMETER = 0.0079375 * 2
+MATRIX_HEIGHT = 0.008255
+TUBE_ID = MATRIX_DIAMETER
+TUBE_OD = 0.0254
+TUBE_HEIGHT = MATRIX_HEIGHT
+ENSURE_CONTACT = True
+STL_FILENAME = "packed_with_outer_tube_contact_fully_aligned.stl"
 
 BASE_RES = 12
-MIN_RES = 4
+MIN_RES = 8
 MAX_RES = 24
 REFERENCE_RADIUS = 0.4
 
@@ -25,7 +27,8 @@ def sph_to_cart(theta, phi):
     z = math.cos(theta)
     return np.array([x, y, z], dtype=np.float32)
 
-def generate_uv_sphere(radius, slices, stacks):
+def generate_uv_sphere(diameter, slices, stacks):
+    radius = diameter / 2
     vertices = []
     faces = []
     for i in range(stacks + 1):
@@ -42,17 +45,21 @@ def generate_uv_sphere(radius, slices, stacks):
             faces.append([vertices[p2], vertices[p2 + 1], vertices[p1 + 1]])
     return faces
 
-def get_tri_res(radius):
+def get_tri_res(diameter):
+    radius = diameter / 2
     factor = radius / REFERENCE_RADIUS
     slices = max(MIN_RES, min(int(BASE_RES * factor), MAX_RES))
     stacks = max(MIN_RES, min(int(BASE_RES * factor * 0.75), MAX_RES))
     return slices, stacks
 
-def generate_packed_centers(d, cyl_radius, cyl_height):
+def generate_packed_centers(d, cyl_diameter, cyl_height, ensure_contact=False):
     r = d / 2
+    radius = cyl_diameter / 2
+    if ensure_contact:
+        radius += d
     dx, dy, dz = d, d * math.sqrt(3) / 2, d * math.sqrt(6) / 3
-    grid_x = int(2 * cyl_radius / dx) + 2
-    grid_y = int(2 * cyl_radius / dy) + 2
+    grid_x = int(2 * radius / dx) + 2
+    grid_y = int(2 * radius / dy) + 2
     grid_z = int(cyl_height / dz) + 2
     centers = []
     for z in range(grid_z):
@@ -60,12 +67,64 @@ def generate_packed_centers(d, cyl_radius, cyl_height):
             for x in range(grid_x):
                 ox = dx / 2 if (z % 2 == 1 or y % 2 == 1) else 0
                 oy = dy / 3 if z % 2 == 1 else 0
-                px = x * dx + ox - cyl_radius
-                py = y * dy + oy - cyl_radius
-                pz = z * dz - cyl_height / 2
-                if px**2 + py**2 <= (cyl_radius - r)**2 and abs(pz) <= cyl_height / 2 - r:
+                px = x * dx + ox - radius
+                py = y * dy + oy - radius
+                pz = z * dz
+                if px**2 + py**2 <= (radius - r)**2 and pz + r <= cyl_height:
                     centers.append((px, py, pz))
     return centers
+
+def compute_matrix_bounds(centers, radius):
+    zs = [cz for _, _, cz in centers]
+    return min(zs) - radius, max(zs) + radius
+
+def generate_hollow_cylinder(od, id, height, slices, z_offset=0.0):
+    triangles = []
+    r_outer = od / 2
+    r_inner = id / 2
+    base_z = z_offset
+    top_z = z_offset + height
+
+    for i in range(slices):
+        theta1 = 2 * math.pi * i / slices
+        theta2 = 2 * math.pi * (i + 1) / slices
+        x1_in, y1_in = r_inner * math.cos(theta1), r_inner * math.sin(theta1)
+        x2_in, y2_in = r_inner * math.cos(theta2), r_inner * math.sin(theta2)
+        x1_out, y1_out = r_outer * math.cos(theta1), r_outer * math.sin(theta1)
+        x2_out, y2_out = r_outer * math.cos(theta2), r_outer * math.sin(theta2)
+
+        # Outer wall
+        triangles.append([np.array([x1_out, y1_out, base_z], np.float32),
+                          np.array([x2_out, y2_out, base_z], np.float32),
+                          np.array([x1_out, y1_out, top_z], np.float32)])
+        triangles.append([np.array([x1_out, y1_out, top_z], np.float32),
+                          np.array([x2_out, y2_out, base_z], np.float32),
+                          np.array([x2_out, y2_out, top_z], np.float32)])
+
+        # Inner wall
+        triangles.append([np.array([x2_in, y2_in, base_z], np.float32),
+                          np.array([x1_in, y1_in, base_z], np.float32),
+                          np.array([x1_in, y1_in, top_z], np.float32)])
+        triangles.append([np.array([x2_in, y2_in, top_z], np.float32),
+                          np.array([x2_in, y2_in, base_z], np.float32),
+                          np.array([x1_in, y1_in, top_z], np.float32)])
+
+        # Top ring
+        triangles.append([np.array([x1_in, y1_in, top_z], np.float32),
+                          np.array([x1_out, y1_out, top_z], np.float32),
+                          np.array([x2_in, y2_in, top_z], np.float32)])
+        triangles.append([np.array([x2_in, y2_in, top_z], np.float32),
+                          np.array([x1_out, y1_out, top_z], np.float32),
+                          np.array([x2_out, y2_out, top_z], np.float32)])
+
+        # Bottom ring
+        triangles.append([np.array([x2_in, y2_in, base_z], np.float32),
+                          np.array([x1_out, y1_out, base_z], np.float32),
+                          np.array([x1_in, y1_in, base_z], np.float32)])
+        triangles.append([np.array([x2_out, y2_out, base_z], np.float32),
+                          np.array([x1_out, y1_out, base_z], np.float32),
+                          np.array([x2_in, y2_in, base_z], np.float32)])
+    return triangles
 
 def write_binary_stl(triangles, filename):
     with open(filename, 'wb') as f:
@@ -77,27 +136,25 @@ def write_binary_stl(triangles, filename):
             data = struct.pack('<3f', *normal) + struct.pack('<3f', *p1) + struct.pack('<3f', *p2) + struct.pack('<3f', *p3) + struct.pack('<H', 0)
             f.write(data)
 
-def main():
+def main_fully_aligned():
     radius = SPHERE_DIAMETER / 2
-    centers = generate_packed_centers(SPHERE_DIAMETER, CYLINDER_RADIUS, CYLINDER_HEIGHT)
-    slices, stacks = get_tri_res(radius)
-    base_sphere = generate_uv_sphere(radius, slices, stacks)
+    centers = generate_packed_centers(SPHERE_DIAMETER, MATRIX_DIAMETER, MATRIX_HEIGHT, ensure_contact=ENSURE_CONTACT)
+    z_min, z_max = compute_matrix_bounds(centers, radius)
+    actual_height = z_max - z_min
+    z_shift = -z_min  # shift entire matrix down so z_min aligns with base
 
-    all_tris = []
+    slices, stacks = get_tri_res(SPHERE_DIAMETER)
+    base_sphere = generate_uv_sphere(SPHERE_DIAMETER, slices, stacks)
+    hollow_cylinder = generate_hollow_cylinder(TUBE_OD, TUBE_ID, TUBE_HEIGHT, 64, z_offset=0.0)
+
+    all_tris = hollow_cylinder[:]
     for cx, cy, cz in centers:
         for tri in base_sphere:
-            transformed = [v + np.array([cx, cy, cz], dtype=np.float32) for v in tri]
+            transformed = [v + np.array([cx, cy, cz + z_shift], dtype=np.float32) for v in tri]
             all_tris.append(transformed)
 
     write_binary_stl(all_tris, STL_FILENAME)
     return STL_FILENAME, len(centers), len(all_tris)
 
-output_path, sphere_count, triangle_count = main()
-
-summary_df = pd.DataFrame({
-    "Output STL File": [output_path],
-    "Sphere Count": [sphere_count],
-    "Triangle Count": [triangle_count]
-})
-
-
+output_path, sphere_count, triangle_count = main_fully_aligned()
+output_path, sphere_count, triangle_count
