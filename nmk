@@ -1,24 +1,33 @@
+import pandas as pd
+import numpy as np
 from scipy.stats import linregress
 from CoolProp.CoolProp import PropsSI
-import numpy as np
-import pandas as pd
+
+# Constants for calculation context
+SAMPLE_LENGTH = 0.0254  # meters (1 inch)
+SAMPLE_AREA = 0.0005067075  # m^2
+FLUID_NAME = 'Nitrogen'  # or the appropriate fluid
 
 def fit_BK_regression(summary_df):
+    # Initialize output columns
     summary_df['K_fit'], summary_df['B_fit'], summary_df['R_squared'] = np.nan, np.nan, np.nan
+    summary_df['delta p'], summary_df['flow'], summary_df['vel'] = np.nan, np.nan, np.nan
+    summary_df['density'], summary_df['viscosity'] = np.nan, np.nan
+    summary_df['Compressable Permeability'], summary_df['x'], summary_df['y'] = np.nan, np.nan, np.nan
+    summary_df['Reynolds Number'] = np.nan
 
+    # Loop over each unique Serial Number group
     for serial in summary_df['Serial Number'].unique():
         group = summary_df[summary_df['Serial Number'] == serial]
         x_vals, y_vals = [], []
 
-        for _, row in group.iterrows():
+        for idx, row in group.iterrows():
             Q, dP, P_1, P_3, T = row['Flow_avg'], row['DP23_avg'], row['Avg_PT2_Pa'], row['Avg_PT3_Pa'], row['Avg_Temp_K']
             if Q <= 0 or dP <= 0:
                 continue
 
             P = (P_1 + P_3) / 2
             v = Q / SAMPLE_AREA
-            grad = dP / (SAMPLE_LENGTH * v)
-
             mu = PropsSI('VISCOSITY', 'P', P, 'T', T, FLUID_NAME)
             rho = PropsSI('D', 'P', P, 'T', T, FLUID_NAME)
             R_con = PropsSI('GAS_CONSTANT', FLUID_NAME)
@@ -29,27 +38,30 @@ def fit_BK_regression(summary_df):
             x = (rho * v) / mu
             y = (dP / SAMPLE_LENGTH) * (1 / (v * mu))
 
+            # Append to regression lists
             x_vals.append(x)
             y_vals.append(y)
 
+            # Save per-row values
+            summary_df.loc[idx, 'delta p'] = dP
+            summary_df.loc[idx, 'flow'] = Q
+            summary_df.loc[idx, 'vel'] = v
+            summary_df.loc[idx, 'density'] = rho
+            summary_df.loc[idx, 'viscosity'] = mu
+            summary_df.loc[idx, 'Compressable Permeability'] = k_cmpr
+            summary_df.loc[idx, 'x'] = x
+            summary_df.loc[idx, 'y'] = y
+            summary_df.loc[idx, 'Reynolds Number'] = (rho * v * SAMPLE_LENGTH) / mu
+
+        # Only perform regression if sufficient data is available
         if len(x_vals) >= 2:
             slope, intercept, r, _, _ = linregress(x_vals, y_vals)
             K_fit = abs(1 / intercept)
-            B_fit = abs((slope * mu) / (rho * v))
-            reynolds = (rho * v * SAMPLE_LENGTH) / mu
+            B_fit = abs((slope * mu) / (rho * v))  # mu, rho, v from last iteration
 
-            # Save values
-            summary_df.loc[summary_df['Serial Number'] == serial, 'delta p'] = dP
-            summary_df.loc[summary_df['Serial Number'] == serial, 'flow'] = Q
-            summary_df.loc[summary_df['Serial Number'] == serial, 'vel'] = v
-            summary_df.loc[summary_df['Serial Number'] == serial, 'density'] = rho
-            summary_df.loc[summary_df['Serial Number'] == serial, 'viscosity'] = mu
-            summary_df.loc[summary_df['Serial Number'] == serial, 'Compressable Permeability'] = k_cmpr
+            # Assign fit values to the entire group
             summary_df.loc[summary_df['Serial Number'] == serial, 'K_fit'] = K_fit
             summary_df.loc[summary_df['Serial Number'] == serial, 'B_fit'] = B_fit
-            summary_df.loc[summary_df['Serial Number'] == serial, 'R_squared'] = r**2
-            summary_df.loc[summary_df['Serial Number'] == serial, 'Reynolds Number'] = reynolds
-            summary_df.loc[summary_df['Serial Number'] == serial, 'x'] = x
-            summary_df.loc[summary_df['Serial Number'] == serial, 'y'] = y
+            summary_df.loc[summary_df['Serial Number'] == serial, 'R_squared'] = r ** 2
 
     return summary_df
