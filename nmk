@@ -1,43 +1,55 @@
-import pandas as pd
-import numpy as np
+from scipy.stats import linregress
 from CoolProp.CoolProp import PropsSI
+import numpy as np
+import pandas as pd
 
-def correct_fluid_properties(df, fluid_col='Fluid', temp_col='Avg_Temp_K', 
-                             pressure_col='Avg_PT2_Pa', flow_col='Flow_avg', 
-                             area=1.0):
+def fit_BK_regression(summary_df):
+    summary_df['K_fit'], summary_df['B_fit'], summary_df['R_squared'] = np.nan, np.nan, np.nan
 
+    for serial in summary_df['Serial Number'].unique():
+        group = summary_df[summary_df['Serial Number'] == serial]
+        x_vals, y_vals = [], []
 
-    # Ensure required columns exist
-    required_cols = [fluid_col, temp_col, pressure_col, flow_col]
-    for col in required_cols:
-        if col not in df.columns:
-            raise ValueError(f"Missing required column: {col}")
+        for _, row in group.iterrows():
+            Q, dP, P_1, P_3, T = row['Flow_avg'], row['DP23_avg'], row['Avg_PT2_Pa'], row['Avg_PT3_Pa'], row['Avg_Temp_K']
+            if Q <= 0 or dP <= 0:
+                continue
 
-    mu_vals = []
-    rho_vals = []
-    v_vals = []
+            P = (P_1 + P_3) / 2
+            v = Q / SAMPLE_AREA
+            grad = dP / (SAMPLE_LENGTH * v)
 
-    for idx, row in df.iterrows():
-        fluid = row[fluid_col]
-        T = row[temp_col]
-        P = row[pressure_col]
-        Q = row[flow_col]
+            mu = PropsSI('VISCOSITY', 'P', P, 'T', T, FLUID_NAME)
+            rho = PropsSI('D', 'P', P, 'T', T, FLUID_NAME)
+            R_con = PropsSI('GAS_CONSTANT', FLUID_NAME)
 
-        # Recalculate mu and rho
-        mu = PropsSI('VISCOSITY', 'T', T, 'P', P, fluid)
-        rho = PropsSI('D', 'T', T, 'P', P, fluid)
-        v = Q / area
+            m_dot = Q * rho
+            k_cmpr = 2 * ((mu * m_dot * R_con * T * SAMPLE_LENGTH) / abs(SAMPLE_AREA * (P_1**2 - P_3**2)))
 
-        mu_vals.append(mu)
-        rho_vals.append(rho)
-        v_vals.append(v)
+            x = (rho * v) / mu
+            y = (dP / SAMPLE_LENGTH) * (1 / (v * mu))
 
-    df['mu'] = mu_vals
-    df['rho'] = rho_vals
-    df['v'] = v_vals
-    df['mu_rho'] = df['mu'] * df['rho']
-    df['rho_v'] = df['rho'] * df['v']
-    df['mu_rho_v'] = df['mu'] * df['rho'] * df['v']
+            x_vals.append(x)
+            y_vals.append(y)
 
-    return df
+        if len(x_vals) >= 2:
+            slope, intercept, r, _, _ = linregress(x_vals, y_vals)
+            K_fit = abs(1 / intercept)
+            B_fit = abs((slope * mu) / (rho * v))
+            reynolds = (rho * v * SAMPLE_LENGTH) / mu
 
+            # Save values
+            summary_df.loc[summary_df['Serial Number'] == serial, 'delta p'] = dP
+            summary_df.loc[summary_df['Serial Number'] == serial, 'flow'] = Q
+            summary_df.loc[summary_df['Serial Number'] == serial, 'vel'] = v
+            summary_df.loc[summary_df['Serial Number'] == serial, 'density'] = rho
+            summary_df.loc[summary_df['Serial Number'] == serial, 'viscosity'] = mu
+            summary_df.loc[summary_df['Serial Number'] == serial, 'Compressable Permeability'] = k_cmpr
+            summary_df.loc[summary_df['Serial Number'] == serial, 'K_fit'] = K_fit
+            summary_df.loc[summary_df['Serial Number'] == serial, 'B_fit'] = B_fit
+            summary_df.loc[summary_df['Serial Number'] == serial, 'R_squared'] = r**2
+            summary_df.loc[summary_df['Serial Number'] == serial, 'Reynolds Number'] = reynolds
+            summary_df.loc[summary_df['Serial Number'] == serial, 'x'] = x
+            summary_df.loc[summary_df['Serial Number'] == serial, 'y'] = y
+
+    return summary_df
