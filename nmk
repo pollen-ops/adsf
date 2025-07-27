@@ -1,25 +1,19 @@
-import pandas as pd
-import numpy as np
-from scipy.stats import linregress
-from CoolProp.CoolProp import PropsSI
 
-# Constants for calculation context
-SAMPLE_LENGTH = 0.0254  # meters (1 inch)
-SAMPLE_AREA = 0.0005067075  # m^2
-FLUID_NAME = 'Nitrogen'  # or the appropriate fluid
+def fit_darcy_forchheimer_compressible(summary_df):
 
-def fit_BK_regression(summary_df):
-    # Initialize output columns
-    summary_df['K_fit'], summary_df['B_fit'], summary_df['R_squared'] = np.nan, np.nan, np.nan
-    summary_df['delta p'], summary_df['flow'], summary_df['vel'] = np.nan, np.nan, np.nan
-    summary_df['density'], summary_df['viscosity'] = np.nan, np.nan
-    summary_df['Compressable Permeability'], summary_df['x'], summary_df['y'] = np.nan, np.nan, np.nan
-    summary_df['Reynolds Number'] = np.nan
+    for col in ['K_fit_incomp', 'B_fit_incomp', 'R_squared_incomp',
+                'K_fit_comp', 'B_fit_comp', 'R_squared_comp',
+                'delta p', 'flow', 'vel', 'density', 'viscosity',
+                'x_incomp', 'y_incomp', 'x_comp', 'y_comp', 'Reynolds Number']:
+        summary_df[col] = np.nan
 
-    # Loop over each unique Serial Number group
+
     for serial in summary_df['Serial Number'].unique():
         group = summary_df[summary_df['Serial Number'] == serial]
-        x_vals, y_vals = [], []
+        x_vals_incomp, y_vals_incomp = [], []
+        x_vals_comp, y_vals_comp = [], []
+
+        last_mu = last_rho = last_v = None  # For later use in B calculation
 
         for idx, row in group.iterrows():
             Q, dP, P_1, P_3, T = row['Flow_avg'], row['DP23_avg'], row['Avg_PT2_Pa'], row['Avg_PT3_Pa'], row['Avg_Temp_K']
@@ -32,36 +26,52 @@ def fit_BK_regression(summary_df):
             rho = PropsSI('D', 'P', P, 'T', T, FLUID_NAME)
             R_con = PropsSI('GAS_CONSTANT', FLUID_NAME)
 
+
+            last_mu, last_rho, last_v = mu, rho, v
+
+
+            x_incomp = (rho * v) / mu
+            y_incomp = (dP / SAMPLE_LENGTH) * (1 / (v * mu))
+
+
             m_dot = Q * rho
-            k_cmpr = 2 * ((mu * m_dot * R_con * T * SAMPLE_LENGTH) / abs(SAMPLE_AREA * (P_1**2 - P_3**2)))
+            deltaP_squared = abs(P_1**2 - P_3**2)
+            x_comp = (rho * v) / mu
+            y_comp = (2 * mu * m_dot * R_con * T * SAMPLE_LENGTH) / (SAMPLE_AREA * deltaP_squared)
 
-            x = (rho * v) / mu
-            y = (dP / SAMPLE_LENGTH) * (1 / (v * mu))
 
-            # Append to regression lists
-            x_vals.append(x)
-            y_vals.append(y)
+            x_vals_incomp.append(x_incomp)
+            y_vals_incomp.append(y_incomp)
+            x_vals_comp.append(x_comp)
+            y_vals_comp.append(y_comp)
 
-            # Save per-row values
+
             summary_df.loc[idx, 'delta p'] = dP
             summary_df.loc[idx, 'flow'] = Q
             summary_df.loc[idx, 'vel'] = v
             summary_df.loc[idx, 'density'] = rho
             summary_df.loc[idx, 'viscosity'] = mu
-            summary_df.loc[idx, 'Compressable Permeability'] = k_cmpr
-            summary_df.loc[idx, 'x'] = x
-            summary_df.loc[idx, 'y'] = y
+            summary_df.loc[idx, 'x_incomp'] = x_incomp
+            summary_df.loc[idx, 'y_incomp'] = y_incomp
+            summary_df.loc[idx, 'x_comp'] = x_comp
+            summary_df.loc[idx, 'y_comp'] = y_comp
             summary_df.loc[idx, 'Reynolds Number'] = (rho * v * SAMPLE_LENGTH) / mu
 
-        # Only perform regression if sufficient data is available
-        if len(x_vals) >= 2:
-            slope, intercept, r, _, _ = linregress(x_vals, y_vals)
-            K_fit = abs(1 / intercept)
-            B_fit = abs((slope * mu) / (rho * v))  # mu, rho, v from last iteration
 
-            # Assign fit values to the entire group
-            summary_df.loc[summary_df['Serial Number'] == serial, 'K_fit'] = K_fit
-            summary_df.loc[summary_df['Serial Number'] == serial, 'B_fit'] = B_fit
-            summary_df.loc[summary_df['Serial Number'] == serial, 'R_squared'] = r ** 2
+        if len(x_vals_incomp) >= 2:
+            slope_i, intercept_i, r_i, _, _ = linregress(x_vals_incomp, y_vals_incomp)
+            K_fit_i = abs(1 / intercept_i)
+            B_fit_i = abs((slope_i * last_mu) / (last_rho * last_v))
+            summary_df.loc[summary_df['Serial Number'] == serial, 'K_fit_incomp'] = K_fit_i
+            summary_df.loc[summary_df['Serial Number'] == serial, 'B_fit_incomp'] = B_fit_i
+            summary_df.loc[summary_df['Serial Number'] == serial, 'R_squared_incomp'] = r_i ** 2
+
+        if len(x_vals_comp) >= 2:
+            slope_c, intercept_c, r_c, _, _ = linregress(x_vals_comp, y_vals_comp)
+            K_fit_c = abs(1 / intercept_c)
+            B_fit_c = abs((slope_c * last_mu) / (last_rho * last_v))
+            summary_df.loc[summary_df['Serial Number'] == serial, 'K_fit_comp'] = K_fit_c
+            summary_df.loc[summary_df['Serial Number'] == serial, 'B_fit_comp'] = B_fit_c
+            summary_df.loc[summary_df['Serial Number'] == serial, 'R_squared_comp'] = r_c ** 2
 
     return summary_df
