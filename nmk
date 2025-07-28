@@ -1,77 +1,63 @@
 
 def fit_BK_regression(summary_df):
-    
-    for col in [
-        'K_fit', 'B_fit', 'R_squared',
-        'K_fit_comp', 'B_fit_comp', 'R_squared_comp',
-        'delta p', 'flow', 'vel', 'density', 'viscosity',
-        'x', 'y', 'x_comp', 'y_comp', 'Reynolds Number'
-    ]:
-        summary_df[col] = np.nan
+    # Initialize output columns
+    summary_df['K_fit_comp'], summary_df['B_fit_comp'], summary_df['R_squared_comp'] = np.nan, np.nan, np.nan
+    summary_df['mass_flow'], summary_df['P1_squared_minus_P2_squared'], summary_df['rho'], summary_df['mu'] = np.nan, np.nan, np.nan, np.nan
+    summary_df['x_comp'], summary_df['y_comp'] = np.nan, np.nan
 
     for serial in summary_df['Serial Number'].unique():
         group = summary_df[summary_df['Serial Number'] == serial]
         x_vals, y_vals = [], []
-        x_vals_comp, y_vals_comp = [], []
 
         for idx, row in group.iterrows():
-            Q, dP, P_1, P_3, T = row['Flow_avg'], row['DP23_avg'], row['Avg_PT2_Pa'], row['Avg_PT3_Pa'], row['Avg_Temp_K']
-            if Q <= 0 or dP <= 0:
+            Q, P1, P2, T = row['Flow_avg'], row['Avg_PT2_Pa'], row['Avg_PT3_Pa'], row['Avg_Temp_K']
+            if Q <= 0 or P1 <= 0 or P2 <= 0:
                 continue
 
-            
-            P = (P_1 + P_3) / 2
-            mu = PropsSI('VISCOSITY', 'P', P, 'T', T, FLUID_NAME)
-            rho = PropsSI('D', 'P', P, 'T', T, FLUID_NAME)
+            P_avg = (P1 + P2) / 2
+            mu = PropsSI('VISCOSITY', 'P', P_avg, 'T', T, FLUID_NAME)
+            rho = PropsSI('D', 'P', P_avg, 'T', T, FLUID_NAME)
             R = PropsSI('GAS_CONSTANT', FLUID_NAME)
+            m_dot = Q * rho  # mass flow rate
 
-            
-            v = Q / SAMPLE_AREA
-            m_dot = Q * rho
-            deltaP_squared = abs(P_1**2 - P_3**2)
+            delta_P_squared = P1**2 - P2**2
+            y = delta_P_squared / SAMPLE_LENGTH
+            x = rho * m_dot**2
 
-            
-            x = (rho * v) / mu
-            y = (dP / SAMPLE_LENGTH) * (1 / (v * mu))
-
-            
-            x_c = x
-            y_c = (2 * mu * m_dot * R * T * SAMPLE_LENGTH) / (SAMPLE_AREA * deltaP_squared)
-
-            
+            # Store values for regression
             x_vals.append(x)
             y_vals.append(y)
-            x_vals_comp.append(x_c)
-            y_vals_comp.append(y_c)
 
-           
-            summary_df.loc[idx, 'delta p'] = dP
-            summary_df.loc[idx, 'flow'] = Q
-            summary_df.loc[idx, 'vel'] = v
-            summary_df.loc[idx, 'density'] = rho
-            summary_df.loc[idx, 'viscosity'] = mu
-            summary_df.loc[idx, 'x'] = x
-            summary_df.loc[idx, 'y'] = y
-            summary_df.loc[idx, 'x_comp'] = x_c
-            summary_df.loc[idx, 'y_comp'] = y_c
-            summary_df.loc[idx, 'Reynolds Number'] = (rho * v * SAMPLE_LENGTH) / mu
+            # Save to DataFrame
+            summary_df.loc[idx, 'mass_flow'] = m_dot
+            summary_df.loc[idx, 'P1_squared_minus_P2_squared'] = delta_P_squared
+            summary_df.loc[idx, 'rho'] = rho
+            summary_df.loc[idx, 'mu'] = mu
+            summary_df.loc[idx, 'x_comp'] = x
+            summary_df.loc[idx, 'y_comp'] = y
+
+            # Debug print
+            print(f"Serial: {serial}, Index: {idx}")
+            print(f"Q: {Q}, P1: {P1}, P2: {P2}, T: {T}")
+            print(f"mu: {mu}, rho: {rho}, m_dot: {m_dot}")
+            print(f"x: {x}, y: {y}")
 
         
         if len(x_vals) >= 2:
-            slope, intercept, r, _, _ = linregress(x_vals, y_vals)
-            K_fit = abs(1 / intercept)
-            B_fit = abs((slope * mu) / (rho * v))
-            summary_df.loc[summary_df['Serial Number'] == serial, 'K_fit'] = K_fit
-            summary_df.loc[summary_df['Serial Number'] == serial, 'B_fit'] = B_fit
-            summary_df.loc[summary_df['Serial Number'] == serial, 'R_squared'] = r**2
+            slope, intercept, r_value, _, _ = linregress(x_vals, y_vals)
 
-        
-        if len(x_vals_comp) >= 2:
-            slope_c, intercept_c, r_c, _, _ = linregress(x_vals_comp, y_vals_comp)
-            K_fit_c = abs(1 / intercept_c)
-            B_fit_c = abs((slope_c * mu) / (rho * v))
-            summary_df.loc[summary_df['Serial Number'] == serial, 'K_fit_comp'] = K_fit_c
-            summary_df.loc[summary_df['Serial Number'] == serial, 'B_fit_comp'] = B_fit_c
-            summary_df.loc[summary_df['Serial Number'] == serial, 'R_squared_comp'] = r_c**2
+            # Compute K from intercept
+            K_comp = (2 * np.mean(summary_df.loc[summary_df['Serial Number'] == serial, 'mu']) *
+                      np.mean(summary_df.loc[summary_df['Serial Number'] == serial, 'mass_flow']) *
+                      R * np.mean(summary_df.loc[summary_df['Serial Number'] == serial, 'Avg_Temp_K'])) / \
+                     (SAMPLE_AREA * intercept)
+            B_comp = slope
+
+            summary_df.loc[summary_df['Serial Number'] == serial, 'K_fit_comp'] = K_comp
+            summary_df.loc[summary_df['Serial Number'] == serial, 'B_fit_comp'] = B_comp
+            summary_df.loc[summary_df['Serial Number'] == serial, 'R_squared_comp'] = r_value ** 2
+
+            
+            print(f"Fit for Serial {serial}: K_fit_comp = {K_comp}, B_fit_comp = {B_comp}, R² = {r_value ** 2}")
 
     return summary_df
