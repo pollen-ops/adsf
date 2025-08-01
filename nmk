@@ -1,105 +1,28 @@
+import numpy as np
+from scipy.optimize import curve_fit
+import matplotlib.pyplot as plt
 
 
-def fit_BK_regression(summary_df):
-    # Initialize all output columns
-    summary_df['K_fit_incomp'] = np.nan
-    summary_df['B_fit_incomp'] = np.nan
-    summary_df['K_fit_comp'] = np.nan
-    summary_df['B_fit_comp'] = np.nan
-    summary_df['R_squared_incomp'] = np.nan
-    summary_df['R_squared_comp'] = np.nan
-    summary_df['Compressable Permeability'] = np.nan
-    summary_df['delta p'] = np.nan
-    summary_df['flow'] = np.nan
-    summary_df['vel'] = np.nan
-    summary_df['density'] = np.nan
-    summary_df['viscosity'] = np.nan
-    summary_df['x'] = np.nan
-    summary_df['y'] = np.nan
-    summary_df['x_comp'] = np.nan
-    summary_df['y_comp'] = np.nan
-    summary_df['Reynolds Number'] = np.nan
+porosity = np.array([0.1, 0.15, 0.2, 0.25, 0.3])        # example porosity values
+permeability = np.array([1e-14, 2e-14, 5e-14, 1e-13, 2e-13])  # example permeability values
 
-    for serial in summary_df['Serial Number'].unique():
-        group = summary_df[summary_df['Serial Number'] == serial]
-        x_vals_incomp, y_vals_incomp = [], []
-        x_vals_comp, y_vals_comp = [], []
+def model_func(phi, alpha, beta, gamma):
+    return alpha * phi + beta * phi**2 + gamma * (10 * phi)**10
 
-        for idx, row in group.iterrows():
-            Q = row['Flow_avg']
-            dP = row['DP23_avg']
-            P1 = row['Avg_PT2_Pa']
-            P3 = row['Avg_PT3_Pa']
-            T = row['Avg_Temp_K']
+popt, pcov = curve_fit(model_func, porosity, permeability)
 
-            if Q <= 0 or dP <= 0:
-                continue
+alpha, beta, gamma = popt
+print(f"Fitted coefficients:\nAlpha = {alpha:.4e}, Beta = {beta:.4e}, Gamma = {gamma:.4e}")
 
-            P_avg = (P1 + P3) / 2
-            mu = PropsSI('VISCOSITY', 'P', P_avg, 'T', T, FLUID_NAME)
-            rho = PropsSI('D', 'P', P_avg, 'T', T, FLUID_NAME)
-            R_con = PropsSI('GAS_CONSTANT', FLUID_NAME)
+phi_fit = np.linspace(min(porosity), max(porosity), 100)
+k_fit = model_func(phi_fit, *popt)
 
-            v = Q / SAMPLE_AREA
-            m_dot = Q * rho
-
-            # Original compressibility-corrected permeability
-            delta_P_sq = abs(P1**2 - P3**2)
-            k_cmpr = 2 * ((mu * m_dot * R_con * T * SAMPLE_LENGTH) / (SAMPLE_AREA * delta_P_sq))
-
-            # Incompressible BK: Original x and y
-            x_incomp = (rho * v) / mu
-            y_incomp = (dP / SAMPLE_LENGTH) * (1 / (v * mu))
-
-            # Compressible BK: Compressibility-adjusted terms
-            x_comp = m_dot / SAMPLE_AREA
-            y_comp = (dP / SAMPLE_LENGTH) * (1 / m_dot)
-
-            # Debug prints
-            print(f"\nSerial: {serial}, Index: {idx}")
-            print(f"Q={Q:.2e}, dP={dP:.2e}, P1={P1:.2e}, P3={P3:.2e}, T={T:.2f}")
-            print(f"mu={mu:.2e}, rho={rho:.2e}, v={v:.2e}, m_dot={m_dot:.2e}")
-            print(f"k_cmpr={k_cmpr:.2e}")
-            print(f"[INCOMP] x={x_incomp:.2e}, y={y_incomp:.2e}")
-            print(f"[COMP ] x={x_comp:.2e}, y={y_comp:.2e}")
-
-            # Store in lists
-            x_vals_incomp.append(x_incomp)
-            y_vals_incomp.append(y_incomp)
-            x_vals_comp.append(x_comp)
-            y_vals_comp.append(y_comp)
-
-            # Store per-row
-            summary_df.loc[idx, 'delta p'] = dP
-            summary_df.loc[idx, 'flow'] = Q
-            summary_df.loc[idx, 'vel'] = v
-            summary_df.loc[idx, 'density'] = rho
-            summary_df.loc[idx, 'viscosity'] = mu
-            summary_df.loc[idx, 'Compressable Permeability'] = k_cmpr
-            summary_df.loc[idx, 'x'] = x_incomp
-            summary_df.loc[idx, 'y'] = y_incomp
-            summary_df.loc[idx, 'x_comp'] = x_comp
-            summary_df.loc[idx, 'y_comp'] = y_comp
-            summary_df.loc[idx, 'Reynolds Number'] = (rho * v * SAMPLE_LENGTH) / mu
-
-        if len(x_vals_incomp) >= 2:
-            # Incompressible fit
-            slope_inc, intercept_inc, r_inc, _, _ = linregress(x_vals_incomp, y_vals_incomp)
-            K_fit_inc = abs(1 / intercept_inc) if intercept_inc != 0 else np.nan
-            B_fit_inc = abs(slope_inc * mu / (rho * v))
-
-            # Compressible fit
-            slope_comp, intercept_comp, r_comp, _, _ = linregress(x_vals_comp, y_vals_comp)
-            K_fit_comp = abs(1 / intercept_comp) if intercept_comp != 0 else np.nan
-            B_fit_comp = abs(slope_comp * SAMPLE_AREA)
-
-            # Assign back to group
-            summary_df.loc[summary_df['Serial Number'] == serial, 'K_fit_incomp'] = K_fit_inc
-            summary_df.loc[summary_df['Serial Number'] == serial, 'B_fit_incomp'] = B_fit_inc
-            summary_df.loc[summary_df['Serial Number'] == serial, 'R_squared_incomp'] = r_inc ** 2
-
-            summary_df.loc[summary_df['Serial Number'] == serial, 'K_fit_comp'] = K_fit_comp
-            summary_df.loc[summary_df['Serial Number'] == serial, 'B_fit_comp'] = B_fit_comp
-            summary_df.loc[summary_df['Serial Number'] == serial, 'R_squared_comp'] = r_comp ** 2
-
-    return summary_df
+plt.scatter(porosity, permeability, label='Data', color='blue')
+plt.plot(phi_fit, k_fit, label='Fitted Model', color='red')
+plt.xlabel('Porosity')
+plt.ylabel('Permeability')
+plt.title('Porosity vs Permeability Fit')
+plt.legend()
+plt.grid(True)
+plt.tight_layout()
+plt.show()
