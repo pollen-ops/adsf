@@ -3,26 +3,39 @@ from scipy.optimize import curve_fit
 import matplotlib.pyplot as plt
 
 
-porosity = np.array([0.1, 0.15, 0.2, 0.25, 0.3])        # example porosity values
-permeability = np.array([1e-14, 2e-14, 5e-14, 1e-13, 2e-13])  # example permeability values
+porosity = np.array([0.1, 0.15, 0.2, 0.25, 0.3])
+permeability = np.array([1e-14, 2e-14, 5e-14, 1e-13, 2e-13])
 
-def model_func(phi, alpha, beta, gamma):
+
+origin_phi = 0.104
+origin_perm = 1e-16
+
+phi_aug = np.append(porosity, origin_phi)
+perm_aug = np.append(permeability, origin_perm)
+
+
+weights = np.ones_like(phi_aug)
+weights[-1] = 1000  # Give high weight to soft origin
+
+
+def model(phi, alpha, beta, gamma):
     return alpha * phi + beta * phi**2 + gamma * (10 * phi)**10
 
-popt, pcov = curve_fit(model_func, porosity, permeability)
 
+popt, _ = curve_fit(model, phi_aug, perm_aug, sigma=1/weights, absolute_sigma=True)
 alpha, beta, gamma = popt
-print(f"Fitted coefficients:\nAlpha = {alpha:.4e}, Beta = {beta:.4e}, Gamma = {gamma:.4e}")
+print(f"Alpha = {alpha:.4e}, Beta = {beta:.4e}, Gamma = {gamma:.4e}")
 
-phi_fit = np.linspace(min(porosity), max(porosity), 100)
-k_fit = model_func(phi_fit, *popt)
+phi_fit = np.linspace(0.09, 0.31, 200)
+k_fit = model(phi_fit, *popt)
 
-plt.scatter(porosity, permeability, label='Data', color='blue')
-plt.plot(phi_fit, k_fit, label='Fitted Model', color='red')
+plt.scatter(porosity, permeability, label='Original Data', color='blue')
+plt.scatter(origin_phi, origin_perm, color='green', label='Soft Origin (10.4%, 1e-16)')
+plt.plot(phi_fit, k_fit, color='red', label='Fitted Model')
+plt.yscale('log')
 plt.xlabel('Porosity')
 plt.ylabel('Permeability')
-plt.title('Porosity vs Permeability Fit')
 plt.legend()
-plt.grid(True)
-plt.tight_layout()
+plt.grid(True, which='both', ls='--')
+plt.title("Porosity vs Permeability (with Origin Constraint)")
 plt.show()
